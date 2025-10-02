@@ -1,23 +1,20 @@
-
-import numpy as np
+mport numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # 从 config 导入参数
-from config import PERTURB_N_SAMPLES, PERTURB_MAGNITUDES, PERTURB_RATIO, PERTURB_SEED
+from config import PERTURB_N_SAMPLES, PERTURB_MAGNITUDES, PERTURB_RATIO
 
 
 def apply_local_perturbations(coords,
                              n_samples=PERTURB_N_SAMPLES,
                              magnitudes=PERTURB_MAGNITUDES,
                              perturb_ratio=PERTURB_RATIO,
-                             seed=PERTURB_SEED):
+                           ):
     """
     对原始坐标应用局部随机扰动
     """
-    if seed is not None:
-        np.random.seed(seed)
     
     n_atoms = coords.shape[0]
     perturbed_structures = {}
@@ -86,7 +83,7 @@ def task3(lowest_coords, lowest_energy, model, scaler, extractor, feature_names)
                                                      n_samples=PERTURB_N_SAMPLES,
                                                      magnitudes=PERTURB_MAGNITUDES,
                                                      perturb_ratio=PERTURB_RATIO,
-                                                     seed=PERTURB_SEED)
+                                                     )
     stability_results = []
 
     for mag, struct_list in perturbed_structures.items():
@@ -200,3 +197,76 @@ def task3(lowest_coords, lowest_energy, model, scaler, extractor, feature_names)
         plt.grid(True)
         plt.show()
     return pd.DataFrame(stability_results)
+
+def stability_vs_magnitude_by_atom_ratio(lowest_coords, lowest_energy, model, scaler, extractor, feature_names,
+                                         n_samples=50, magnitudes=[0.01,0.02,0.05], perturb_ratios=[0.1,0.3,0.5,0.7,1.0],
+                                         seed=42):
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    np.random.seed(seed)
+    n_atoms = lowest_coords.shape[0]
+    results = []
+
+    for ratio in perturb_ratios:
+        for mag in magnitudes:
+            deltas, rmsds, stability_idx = [], [], []
+
+            for _ in range(n_samples):
+                perturbation = np.zeros_like(lowest_coords)
+                n_perturb = max(1, int(n_atoms * ratio))
+                perturb_indices = np.random.choice(n_atoms, size=n_perturb, replace=False)
+                perturbation[perturb_indices] = np.random.normal(scale=mag, size=(n_perturb,3))
+                perturbed_coords = lowest_coords + perturbation
+
+                try:
+                    features = extractor.extract_all_features(perturbed_coords)
+                    X_df = pd.DataFrame([features])
+                    for col in feature_names:
+                        if col not in X_df.columns:
+                            X_df[col] = 0.0
+                    X_df = X_df[feature_names]
+                    X_scaled = scaler.transform(X_df.values)
+                    pred_energy = model.predict(X_scaled)[0]
+
+                    delta = pred_energy - lowest_energy
+                    rmsd_val = kabsch_rmsd(lowest_coords, perturbed_coords)
+                    stability = delta * rmsd_val
+
+
+                    deltas.append(delta)
+                    rmsds.append(rmsd_val)
+                    stability_idx.append(stability)
+                except:
+                    continue
+
+            if deltas:
+                results.append({
+                    "perturb_ratio": ratio,
+                    "magnitude": mag,
+                    "mean_stability": np.nanmean(stability_idx),
+                    "std_stability": np.nanstd(stability_idx)
+                })
+
+    df_results = pd.DataFrame(results)
+
+    # 绘图
+    plt.figure(figsize=(8,6))
+    for ratio in perturb_ratios:
+        subset = df_results[df_results["perturb_ratio"]==ratio]
+        plt.plot(subset["magnitude"], subset["mean_stability"], marker='o', linewidth=2, label=f"{int(ratio*100)}% atoms")
+        plt.fill_between(subset["magnitude"],
+                         subset["mean_stability"] - subset["std_stability"],
+                         subset["mean_stability"] + subset["std_stability"],
+                         alpha=0.2)
+
+    plt.xlabel("Perturbation Magnitude (Å)")
+    plt.ylabel("Mean Stability Index (ΔE*RMSD)")
+    plt.title("Stability Index vs Perturbation Magnitude for Different Atom Ratios")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+    return df_results
